@@ -1,15 +1,14 @@
 package me.orekin.entitylocker
 
 import kotlin.test.Test
-import kotlin.test.assertNotNull
 
 internal class EntityLockerTest {
 
-    private val locker = EntityLocker()
+    private val locker = EntityLocker<Int>()
 
     @Test
     fun testLocker() {
-        assertNotNull(locker)
+        locker.executeLocked(1) {}
     }
 
 }
