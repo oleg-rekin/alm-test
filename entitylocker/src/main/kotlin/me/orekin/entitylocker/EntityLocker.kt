@@ -6,6 +6,12 @@ import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.Semaphore
 import java.util.concurrent.locks.ReentrantLock
 
+/**
+ * [EntityLocker] is a reusable utility class that provides synchronization mechanism similar to row-level DB locking.
+ * See tests for usage examples.
+ *
+ * Note that [ID] is expected to implement [Any.equals] and [Any.hashCode] in a meaningful way.
+ */
 class EntityLocker<ID : Any> {
 
     private val lockedEntityIds = ConcurrentHashMap.newKeySet<ID>()

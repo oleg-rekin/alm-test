@@ -1,0 +1,23 @@
+Q1.
+
+> Requirements, 2. ... designate the boundaries of the ("protected") code ...
+
+Is there any information on how protected code will be organized? Will protected code boundaries always be inside one block of code?
+
+Arbitrary boundaries (similar to `lock()`/`unlock()` methods) provide additional flexibility, but also make it easier to infinitely lock a resource by mistake (even more so comparing to the regular locks, as we lock on specific ids).
+
+With this in mind, I'd pass protected code as a lambda along with the ID to lock on, but that will restrict the possible usages, hence the initial question.
+
+A1.
+
+It is up to you, both options are acceptable.
+
+Q2.
+
+Is there any information on the expected workload (typical protected code execution time, probability of actual requests to lock on the same entity, average amount of locked threads)?
+
+Normally, I'd wait for the answer to this question before picking a toolset for the implementation (e.g. classic locks/semaphores/etc for long protected code execution times, spinlocks for short protected code execution times). However, given that I'm not familiar enough with advanced approaches like spinlocks, using them would take much more time. As this is a test task, I hope that classic primitives will do.
+
+A2.
+
+Classic primitives are OK. There is no information on the load profile. The solution must be correct and must stay fail-safe if executed for a long time.
