@@ -27,48 +27,62 @@ class EntityLocker<ID : Any> {
         if (lockedEntityIds.add(entityId)) {
             return
         }
-        // Another thread can release the last lock here, TODO recheck
-        val semaphoreToLockOn = addLockedToQueue(entityId)
-        semaphoreToLockOn.acquire()
+        val semaphoreToLockOn = recheckIsEntityLockedAndAddToQueueIfNeeded(entityId)
+
+        // Have to lock on the semaphore after releasing `waitingQueueLock`,
+        // so this line cannot be moved into the method called above
+        semaphoreToLockOn?.acquire()
     }
 
     private fun unlock(entityId: ID) {
-        val semaphoreToFree = getNextLockedFromQueueIfExists(entityId)
-        if (semaphoreToFree == null) {
-            lockedEntityIds.remove(entityId)
-            return
-        }
-        semaphoreToFree.release()
+        val semaphoreToFree = getNextLockedFromQueueIfExistsOrReleaseEntity(entityId)
+        semaphoreToFree?.release()
     }
 
-    private fun addLockedToQueue(entityId: ID): Semaphore {
+    private fun recheckIsEntityLockedAndAddToQueueIfNeeded(entityId: ID): Semaphore? {
         waitingQueueLock.lock()
         try {
+            if (lockedEntityIds.add(entityId)) {
+                // The entity has been released, so we do not need to wait
+                return null
+            }
             val waitingQueue = waitingQueuesByEntityId.computeIfAbsent(entityId) { ConcurrentLinkedQueue() }
-            val semaphore = Semaphore(0)
-            waitingQueue.add(semaphore)
-            return semaphore
+            val lockedSemaphore = Semaphore(0)
+            waitingQueue.add(lockedSemaphore)
+            return lockedSemaphore
         } finally {
             waitingQueueLock.unlock()
         }
     }
 
-    private fun getNextLockedFromQueueIfExists(entityId: ID): Semaphore? {
+    private fun getNextLockedFromQueueIfExistsOrReleaseEntity(entityId: ID): Semaphore? {
         waitingQueueLock.lock()
         try {
-            val waitingQueue = waitingQueuesByEntityId[entityId] ?: return null
+            val waitingQueue = waitingQueuesByEntityId[entityId]
+
+            if (waitingQueue == null) {
+                // Have to do it under the waitingQueueLock lock in case there is a concurrent lock request
+                // that failed the fast track locking. As releasing (this line) is under the waitingQueueLock lock,
+                // that request either have already added a waiting semaphore or will recheck the lockedEntityIds later.
+                lockedEntityIds.remove(entityId)
+                return null
+            }
 
             if (waitingQueue.isEmpty()) {
                 // Should never happen, TODO use proper logging
                 println("Empty queue was not removed for entity ID $entityId, removing it now")
                 waitingQueuesByEntityId.remove(entityId)
+
+                // Same behavior as if there was no queue, see above
+                lockedEntityIds.remove(entityId)
+                return null
             }
 
-            val semaphore = waitingQueue.remove()
+            val waitingSemaphore = waitingQueue.remove()
             if (waitingQueue.isEmpty()) {
                 waitingQueuesByEntityId.remove(entityId)
             }
-            return semaphore
+            return waitingSemaphore
         } finally {
             waitingQueueLock.unlock()
         }
