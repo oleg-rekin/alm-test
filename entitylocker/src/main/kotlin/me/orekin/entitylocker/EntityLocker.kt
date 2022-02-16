@@ -5,7 +5,6 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.Semaphore
 import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicLong
 
 /**
  * [EntityLocker] is a reusable utility class that provides synchronization mechanism similar to row-level DB locking.
@@ -25,9 +24,7 @@ import java.util.concurrent.atomic.AtomicLong
  */
 class EntityLocker<ID : Any> {
 
-    private val lockedEntityIds = ConcurrentHashMap.newKeySet<ID>()
-
-    private val lockedEntityDetailsById = ConcurrentHashMap<ID, LockedEntityDetails>()
+    private val lockedEntitiesHolder = LockedEntitiesHolder<ID>()
 
     private val waitingQueuesByEntityId = ConcurrentHashMap<ID, Queue<WaitingThreadDetails>>()
 
@@ -80,7 +77,7 @@ class EntityLocker<ID : Any> {
     }
 
     private fun lock(entityId: ID, currentThreadId: Long) {
-        if (tryLockAndStoreDetails(entityId, currentThreadId)) {
+        if (lockedEntitiesHolder.tryLockAndStoreDetails(entityId, currentThreadId)) {
             return
         }
         val semaphoreToLockOn = recheckIsEntityLockedAndAddToQueueIfNeeded(entityId, currentThreadId)
@@ -91,7 +88,7 @@ class EntityLocker<ID : Any> {
     }
 
     private fun tryLock(entityId: ID, timeout: Long, timeoutUnit: TimeUnit, currentThreadId: Long): Boolean {
-        if (tryLockAndStoreDetails(entityId, currentThreadId)) {
+        if (lockedEntitiesHolder.tryLockAndStoreDetails(entityId, currentThreadId)) {
             return true
         }
         val semaphoreToLockOn = recheckIsEntityLockedAndAddToQueueIfNeeded(entityId, currentThreadId) ?: return true
@@ -115,13 +112,11 @@ class EntityLocker<ID : Any> {
     private fun recheckIsEntityLockedAndAddToQueueIfNeeded(entityId: ID, currentThreadId: Long): Semaphore? {
         waitingQueueLock.acquire()
         try {
-            if (tryLockAndStoreDetails(entityId, currentThreadId)) {
+            if (lockedEntitiesHolder.tryLockAndStoreDetails(entityId, currentThreadId)) {
                 // The entity has been released, so we do not need to wait
                 return null
             }
-            val lockedDetails = lockedEntityDetailsById.get(entityId)
-                ?: // Should never happen
-                throw IllegalMonitorStateException("Entity with ID '$entityId' is locked but there is no details on the lock. This EntityLocker instance's state is corrupted")
+            val lockedDetails = lockedEntitiesHolder.getLockedEntityDetails(entityId)
 
             if (lockedDetails.holdingThreadId == currentThreadId) {
                 lockedDetails.acquisitionsCount.incrementAndGet()
@@ -138,24 +133,10 @@ class EntityLocker<ID : Any> {
         }
     }
 
-    /**
-     * Details are stored only in case of successful locking.
-     * @return `true` if locked successfully, `false` otherwise.
-     */
-    private fun tryLockAndStoreDetails(entityId: ID, currentThreadId: Long): Boolean {
-        if (!lockedEntityIds.add(entityId)) {
-            return false
-        }
-        lockedEntityDetailsById.put(entityId, LockedEntityDetails(currentThreadId, AtomicLong(1)))
-        return true
-    }
-
     private fun releaseNextLockedFromQueueIfExistsOrReleaseEntity(entityId: ID, currentThreadId: Long) {
         waitingQueueLock.acquire()
         try {
-            val lockedEntityDetails = lockedEntityDetailsById.get(entityId)
-                ?: // Should never happen
-                throw IllegalMonitorStateException("Entity with ID '$entityId' is locked but there is no details on the lock. This EntityLocker instance's state is corrupted")
+            val lockedEntityDetails = lockedEntitiesHolder.getLockedEntityDetails(entityId)
 
             if (lockedEntityDetails.holdingThreadId != currentThreadId) {
                 // Should never happen as `lock()`/`unlock()` methods are private
@@ -173,7 +154,7 @@ class EntityLocker<ID : Any> {
                 // Have to do it under the waitingQueueLock lock in case there is a concurrent lock request
                 // that failed the fast track locking. As releasing (this line) is under the waitingQueueLock lock,
                 // that request either have already added a waiting semaphore or will recheck the lockedEntityIds later.
-                releaseEntityAndClearDetails(entityId)
+                lockedEntitiesHolder.releaseEntityAndClearDetails(entityId)
                 return
             }
 
@@ -185,7 +166,7 @@ class EntityLocker<ID : Any> {
             if (waitingQueue.isEmpty()) {
                 waitingQueuesByEntityId.remove(entityId)
             }
-            lockedEntityDetailsById.put(entityId, LockedEntityDetails(nextWaitingThread.threadId, AtomicLong(1)))
+            lockedEntitiesHolder.replaceLockedEntityDetails(entityId, nextWaitingThread.threadId)
             // Have to release under the waitingQueueLock lock so that retrying in `retryLockAndRemoveFromQueueIfNeeded` shows the actual state
             nextWaitingThread.semaphoreToLockOn.release()
         } finally {
@@ -225,10 +206,5 @@ class EntityLocker<ID : Any> {
         } finally {
             waitingQueueLock.release()
         }
-    }
-
-    private fun releaseEntityAndClearDetails(entityId: ID) {
-        lockedEntityIds.remove(entityId)
-        lockedEntityDetailsById.remove(entityId)
     }
 }
