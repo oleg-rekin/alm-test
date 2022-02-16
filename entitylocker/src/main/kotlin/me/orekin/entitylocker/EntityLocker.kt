@@ -17,10 +17,10 @@ import java.util.concurrent.TimeUnit
  * The class supports locking with timeout, see [tryExecuteLocked] method description for details.
  *
  *
- * See tests for usage examples.
- *
- *
  * Note that [ID] is expected to implement [Any.equals] and [Any.hashCode] in a meaningful way.
+ *
+ *
+ * See tests for usage examples.
  */
 class EntityLocker<ID : Any> {
 
@@ -39,6 +39,7 @@ class EntityLocker<ID : Any> {
      *
      *
      * @throws [InterruptedException] if the current thread is interrupted.
+     * @throws [IllegalMonitorStateException] in case of internal errors.
      */
     fun <R> executeLocked(entityId: ID, protectedBlock: () -> R): R {
         val currentThreadId = Thread.currentThread().id
@@ -62,6 +63,7 @@ class EntityLocker<ID : Any> {
      *
      *
      * @throws [InterruptedException] if the current thread is interrupted.
+     * @throws [IllegalMonitorStateException] in case of internal errors.
      */
     fun tryExecuteLocked(entityId: ID, timeout: Long, timeoutUnit: TimeUnit, protectedBlock: () -> Unit): Boolean {
         val currentThreadId = Thread.currentThread().id
