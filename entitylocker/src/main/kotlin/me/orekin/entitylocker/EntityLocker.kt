@@ -21,7 +21,6 @@ class EntityLocker<ID : Any> {
 
     private val waitingQueuesByEntityId = ConcurrentHashMap<ID, Queue<Semaphore>>()
 
-    // TODO handle reenterrancy of this lock
     private val waitingQueueLock = ReentrantLock()
 
     fun <R> executeLocked(entityId: ID, protectedBlock: () -> R): R {
