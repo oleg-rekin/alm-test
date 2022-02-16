@@ -84,7 +84,7 @@ internal class EntityLockerBasicTest {
 
     @Test
     fun testMultipleWaitingThreadsForSameEntityExecuted() {
-        val threadsCount = 4
+        val threadsCount = 10
         val locker = EntityLocker<Int>()
         val executedCriticalSectionsCount = AtomicInteger(0)
 

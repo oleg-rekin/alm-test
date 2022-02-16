@@ -4,7 +4,7 @@ plugins {
 }
 
 group = 'me.orekin'
-version = '2022.1.0'
+version = '2022.1.1'
 
 repositories {
     mavenCentral()
