@@ -2,10 +2,8 @@ package me.orekin.entitylocker
 
 import java.util.*
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.Semaphore
 import java.util.concurrent.atomic.AtomicLong
-import java.util.concurrent.locks.ReentrantLock
 
 /**
  * [EntityLocker] is a reusable utility class that provides synchronization mechanism similar to row-level DB locking.
@@ -19,9 +17,9 @@ class EntityLocker<ID : Any> {
 
     private val lockedEntityDetailsById = HashMap<ID, LockedEntityDetails>()
 
-    private val waitingQueuesByEntityId = ConcurrentHashMap<ID, Queue<Semaphore>>()
+    private val waitingQueuesByEntityId = HashMap<ID, Queue<Semaphore>>()
 
-    private val waitingQueueLock = ReentrantLock()
+    private val waitingQueueLock = Semaphore(1)
 
     fun <R> executeLocked(entityId: ID, protectedBlock: () -> R): R {
         val currentThreadId = Thread.currentThread().id
@@ -50,7 +48,7 @@ class EntityLocker<ID : Any> {
     }
 
     private fun recheckIsEntityLockedAndAddToQueueIfNeeded(entityId: ID, currentThreadId: Long): Semaphore? {
-        waitingQueueLock.lock()
+        waitingQueueLock.acquire()
         try {
             if (tryLockAndStoreDetails(entityId, currentThreadId)) {
                 // The entity has been released, so we do not need to wait
@@ -63,12 +61,12 @@ class EntityLocker<ID : Any> {
                 return null
             }
 
-            val waitingQueue = waitingQueuesByEntityId.computeIfAbsent(entityId) { ConcurrentLinkedQueue() }
+            val waitingQueue = waitingQueuesByEntityId.computeIfAbsent(entityId) { LinkedList() }
             val lockedSemaphore = Semaphore(0)
             waitingQueue.add(lockedSemaphore)
             return lockedSemaphore
         } finally {
-            waitingQueueLock.unlock()
+            waitingQueueLock.release()
         }
     }
 
@@ -85,7 +83,7 @@ class EntityLocker<ID : Any> {
     }
 
     private fun getNextLockedFromQueueIfExistsOrReleaseEntity(entityId: ID): Semaphore? {
-        waitingQueueLock.lock()
+        waitingQueueLock.acquire()
         try {
             val waitingQueue = waitingQueuesByEntityId[entityId]
 
@@ -113,7 +111,7 @@ class EntityLocker<ID : Any> {
             }
             return waitingSemaphore
         } finally {
-            waitingQueueLock.unlock()
+            waitingQueueLock.release()
         }
     }
 }
