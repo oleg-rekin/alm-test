@@ -1,9 +1,10 @@
 package me.orekin.entitylocker
 
-import java.util.Queue
+import java.util.*
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.Semaphore
+import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.locks.ReentrantLock
 
 /**
@@ -16,42 +17,53 @@ class EntityLocker<ID : Any> {
 
     private val lockedEntityIds = ConcurrentHashMap.newKeySet<ID>()
 
+    private val lockedEntityDetailsById = HashMap<ID, LockedEntityDetails>()
+
     private val waitingQueuesByEntityId = ConcurrentHashMap<ID, Queue<Semaphore>>()
 
+    // TODO handle reenterrancy of this lock
     private val waitingQueueLock = ReentrantLock()
 
     fun <R> executeLocked(entityId: ID, protectedBlock: () -> R): R {
-        lock(entityId)
+        val currentThreadId = Thread.currentThread().id
+        lock(entityId, currentThreadId)
         try {
             return protectedBlock()
         } finally {
-            unlock(entityId)
+            unlock(entityId, currentThreadId)
         }
     }
 
-    private fun lock(entityId: ID) {
-        if (lockedEntityIds.add(entityId)) {
+    private fun lock(entityId: ID, currentThreadId: Long) {
+        if (tryLockAndStoreDetails(entityId, currentThreadId)) {
             return
         }
-        val semaphoreToLockOn = recheckIsEntityLockedAndAddToQueueIfNeeded(entityId)
+        val semaphoreToLockOn = recheckIsEntityLockedAndAddToQueueIfNeeded(entityId, currentThreadId)
 
         // Have to lock on the semaphore after releasing `waitingQueueLock`,
         // so this line cannot be moved into the method called above
         semaphoreToLockOn?.acquire()
     }
 
-    private fun unlock(entityId: ID) {
+    private fun unlock(entityId: ID, currentThreadId: Long) {
         val semaphoreToFree = getNextLockedFromQueueIfExistsOrReleaseEntity(entityId)
         semaphoreToFree?.release()
     }
 
-    private fun recheckIsEntityLockedAndAddToQueueIfNeeded(entityId: ID): Semaphore? {
+    private fun recheckIsEntityLockedAndAddToQueueIfNeeded(entityId: ID, currentThreadId: Long): Semaphore? {
         waitingQueueLock.lock()
         try {
-            if (lockedEntityIds.add(entityId)) {
+            if (tryLockAndStoreDetails(entityId, currentThreadId)) {
                 // The entity has been released, so we do not need to wait
                 return null
             }
+            val lockedDetails = lockedEntityDetailsById[entityId]!!
+            if (lockedDetails.holdingThreadId == currentThreadId) {
+                lockedDetails.acquisitionsCount.incrementAndGet()
+                // The entity lock is held by the same thread, so we do not need to wait
+                return null
+            }
+
             val waitingQueue = waitingQueuesByEntityId.computeIfAbsent(entityId) { ConcurrentLinkedQueue() }
             val lockedSemaphore = Semaphore(0)
             waitingQueue.add(lockedSemaphore)
@@ -59,6 +71,18 @@ class EntityLocker<ID : Any> {
         } finally {
             waitingQueueLock.unlock()
         }
+    }
+
+    /**
+     * Details are stored only in case of successful locking.
+     * @return `true` if locked successfully, `false` otherwise.
+     */
+    private fun tryLockAndStoreDetails(entityId: ID, currentThreadId: Long): Boolean {
+        if (!lockedEntityIds.add(entityId)) {
+            return false
+        }
+        lockedEntityDetailsById[entityId] = LockedEntityDetails(currentThreadId, AtomicLong(1))
+        return true
     }
 
     private fun getNextLockedFromQueueIfExistsOrReleaseEntity(entityId: ID): Semaphore? {
